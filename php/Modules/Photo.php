@@ -238,8 +238,7 @@ final class Photo {
 
 		}
 
-		// Save to DB
-		$values = array(LYCHEE_TABLE_PHOTOS, $id, $info['title'], $photo_name, $info['description'], '', $info['type'], $info['width'], $info['height'], $info['size'], $info['iso'], $info['aperture'], $info['make'], $info['model'], $info['shutter'], $info['focal'], $info['takestamp'], $path_thumb, $albumID, $public, $star, $checksum, $medium);
+		$values = array(LYCHEE_TABLE_PHOTOS, $id, $info['title'], $photo_name, $info['description'], $info['tags'], $info['type'], $info['width'], $info['height'], $info['size'], $info['iso'], $info['aperture'], $info['make'], $info['model'], $info['shutter'], $info['focal'], $info['takestamp'], $path_thumb, $albumID, $public, $star, $checksum, $medium);
 		$query  = Database::prepare(Database::get(), "INSERT INTO ? (id, title, url, description, tags, type, width, height, size, iso, aperture, make, model, shutter, focal, takestamp, thumbUrl, album, public, star, checksum, medium) VALUES ('?', '?', '?', '?', '?', '?', '?', '?', '?', '?', '?', '?', '?', '?', '?', '?', '?', '?', '?', '?', '?', '?')", $values);
 		$result = Database::execute(Database::get(), $query, __METHOD__, __LINE__);
 
@@ -296,7 +295,7 @@ final class Photo {
 		Plugins::get()->activate(__METHOD__, 0, func_get_args());
 
 		// Quality of thumbnails
-		$thumbQuality = 90;
+		$quality = 90;
 
 		// Size of the thumbnail
 		$newWidth  = 200;
@@ -307,13 +306,16 @@ final class Photo {
 		$newUrl2x  = LYCHEE_UPLOADS_THUMB . $photoName[0] . '@2x.jpeg';
 
 		// Create thumbnails with Imagick
-		if(extension_loaded('imagick')&&Settings::get()['imagick']==='1') {
+		if(Settings::hasImagick()) {
 
 			// Read image
 			$thumb = new Imagick();
 			$thumb->readImage($url);
-			$thumb->setImageCompressionQuality($thumbQuality);
+			$thumb->setImageCompressionQuality($quality);
 			$thumb->setImageFormat('jpeg');
+
+			// Remove metadata to save some bytes
+			$thumb->stripImage();
 
 			// Copy image for 2nd thumb version
 			$thumb2x = clone $thumb;
@@ -359,12 +361,12 @@ final class Photo {
 
 			// Create thumb
 			fastImageCopyResampled($thumb, $sourceImg, 0, 0, $startWidth, $startHeight, $newWidth, $newHeight, $newSize, $newSize);
-			imagejpeg($thumb, $newUrl, $thumbQuality);
+			imagejpeg($thumb, $newUrl, $quality);
 			imagedestroy($thumb);
 
 			// Create retina thumb
 			fastImageCopyResampled($thumb2x, $sourceImg, 0, 0, $startWidth, $startHeight, $newWidth*2, $newHeight*2, $newSize, $newSize);
-			imagejpeg($thumb2x, $newUrl2x, $thumbQuality);
+			imagejpeg($thumb2x, $newUrl2x, $quality);
 			imagedestroy($thumb2x);
 
 			// Free memory
@@ -394,6 +396,9 @@ final class Photo {
 
 		// Call plugins
 		Plugins::get()->activate(__METHOD__, 0, func_get_args());
+
+		// Quality of medium-photo
+		$quality = 90;
 
 		// Set to true when creation of medium-photo failed
 		$error = false;
@@ -427,6 +432,8 @@ final class Photo {
 
 			// Adjust image
 			$medium->scaleImage($newWidth, $newHeight, true);
+			$medium->stripImage();
+			$medium->setImageCompressionQuality($quality);
 
 			// Save image
 			try { $medium->writeImage($newUrl); }
@@ -472,20 +479,50 @@ final class Photo {
 
 		if (extension_loaded('imagick')&&Settings::get()['imagick']==='1') {
 
-			switch ($info['orientation']) {
+			$image = new Imagick();
+			$image->readImage($path);
 
-				case 3:
-					$rotateImage = 180;
+			$orientation = $image->getImageOrientation();
+
+			switch ($orientation) {
+
+				case Imagick::ORIENTATION_TOPLEFT:
+					return false;
 					break;
 
-				case 6:
-					$rotateImage = 90;
-					$swapSize    = true;
+				case Imagick::ORIENTATION_TOPRIGHT:
+					$image->flopImage();
 					break;
 
-				case 8:
-					$rotateImage = 270;
-					$swapSize    = true;
+				case Imagick::ORIENTATION_BOTTOMRIGHT:
+					$image->rotateImage(new ImagickPixel(), 180);
+					break;
+
+				case Imagick::ORIENTATION_BOTTOMLEFT:
+					$image->flopImage();
+					$image->rotateImage(new ImagickPixel(), 180);
+					break;
+
+				case Imagick::ORIENTATION_LEFTTOP:
+					$image->flopImage();
+					$image->rotateImage(new ImagickPixel(), -90);
+					$swapSize = true;
+					break;
+
+				case Imagick::ORIENTATION_RIGHTTOP:
+					$image->rotateImage(new ImagickPixel(), 90);
+					$swapSize = true;
+					break;
+
+				case Imagick::ORIENTATION_RIGHTBOTTOM:
+					$image->flopImage();
+					$image->rotateImage(new ImagickPixel(), 90);
+					$swapSize = true;
+					break;
+
+				case Imagick::ORIENTATION_LEFTBOTTOM:
+					$image->rotateImage(new ImagickPixel(), -90);
+					$swapSize = true;
 					break;
 
 				default:
@@ -494,15 +531,13 @@ final class Photo {
 
 			}
 
-			if ($rotateImage!==0) {
-				$image = new Imagick();
-				$image->readImage($path);
-				$image->rotateImage(new ImagickPixel(), $rotateImage);
-				$image->setImageOrientation(1);
-				$image->writeImage($path);
-				$image->clear();
-				$image->destroy();
-			}
+			// Adjust photo
+			$image->setImageOrientation(Imagick::ORIENTATION_TOPLEFT);
+			$image->writeImage($path);
+
+			// Free memory
+			$image->clear();
+			$image->destroy();
 
 		} else {
 
@@ -512,10 +547,14 @@ final class Photo {
 
 			switch ($info['orientation']) {
 
+				case 1:
+					// do nothing
+					return false;
+					break;
+
 				case 2:
 					// mirror
-					// not yet implemented
-					return false;
+					imageflip($sourceImg, IMG_FLIP_HORIZONTAL);
 					break;
 
 				case 3:
@@ -524,14 +563,16 @@ final class Photo {
 
 				case 4:
 					// rotate 180 and mirror
-					// not yet implemented
-					return false;
+					imageflip($sourceImg, IMG_FLIP_VERTICAL);
 					break;
 
 				case 5:
 					// rotate 90 and mirror
-					// not yet implemented
-					return false;
+					$sourceImg = imagerotate($sourceImg, -90, 0);
+					$newWidth  = $info['height'];
+					$newHeight = $info['width'];
+					$swapSize  = true;
+					imageflip($sourceImg, IMG_FLIP_HORIZONTAL);
 					break;
 
 				case 6:
@@ -543,8 +584,11 @@ final class Photo {
 
 				case 7:
 					// rotate -90 and mirror
-					// not yet implemented
-					return false;
+					$sourceImg = imagerotate($sourceImg, 90, 0);
+					$newWidth  = $info['height'];
+					$newHeight = $info['width'];
+					$swapSize  = true;
+					imageflip($sourceImg, IMG_FLIP_HORIZONTAL);
 					break;
 
 				case 8:
@@ -561,6 +605,7 @@ final class Photo {
 			}
 
 			// Recreate photo
+			// In this step the photos also loses its metadata :(
 			$newSourceImg = imagecreatetruecolor($newWidth, $newHeight);
 			imagecopyresampled($newSourceImg, $sourceImg, 0, 0, 0, 0, $newWidth, $newHeight, $newWidth, $newHeight);
 			imagejpeg($newSourceImg, $path, 100);
@@ -593,7 +638,7 @@ final class Photo {
 	public static function prepareData(array $data) {
 
 		// Excepts the following:
-		// (array) $data = ['id', 'title', 'tags', 'public', 'star', 'album', 'thumbUrl', 'takestamp', 'url']
+		// (array) $data = ['id', 'title', 'tags', 'public', 'star', 'album', 'thumbUrl', 'takestamp', 'url', 'medium']
 
 		// Init
 		$photo = null;
@@ -606,7 +651,11 @@ final class Photo {
 		$photo['star']   = $data['star'];
 		$photo['album']  = $data['album'];
 
-		// Parse urls
+		// Parse medium
+		if ($data['medium']==='1') $photo['medium'] = LYCHEE_URL_UPLOADS_MEDIUM . $data['url'];
+		else                       $photo['medium'] = '';
+
+		// Parse paths
 		$photo['thumbUrl'] = LYCHEE_URL_UPLOADS_THUMB . $data['thumbUrl'];
 		$photo['url']      = LYCHEE_URL_UPLOADS_BIG . $data['url'];
 
@@ -727,39 +776,11 @@ final class Photo {
 		$info      = getimagesize($url, $iptcArray);
 
 		// General information
-		$return['type']   = $info['mime'];
-		$return['width']  = $info[0];
-		$return['height'] = $info[1];
-
-		// Size
-		$size = filesize($url)/1024;
-		if ($size>=1024) $return['size'] = round($size/1024, 1) . ' MB';
-		else $return['size'] = round($size, 1) . ' KB';
-
-		// IPTC Metadata Fallback
+		$return['type']        = $info['mime'];
+		$return['width']       = $info[0];
+		$return['height']      = $info[1];
 		$return['title']       = '';
 		$return['description'] = '';
-
-		// IPTC Metadata
-		if(isset($iptcArray['APP13'])) {
-
-			$iptcInfo = iptcparse($iptcArray['APP13']);
-			if (is_array($iptcInfo)) {
-
-				$temp = @$iptcInfo['2#105'][0];
-				if (isset($temp)&&strlen($temp)>0) $return['title'] = $temp;
-
-				$temp = @$iptcInfo['2#120'][0];
-				if (isset($temp)&&strlen($temp)>0) $return['description'] = $temp;
-
-				$temp = @$iptcInfo['2#005'][0];
-				if (isset($temp)&&strlen($temp)>0&&$return['title']==='') $return['title'] = $temp;
-
-			}
-
-		}
-
-		// EXIF Metadata Fallback
 		$return['orientation'] = '';
 		$return['iso']         = '';
 		$return['aperture']    = '';
@@ -768,45 +789,95 @@ final class Photo {
 		$return['shutter']     = '';
 		$return['focal']       = '';
 		$return['takestamp']   = 0;
+		$return['lens']        = '';
+		$return['tags']        = '';
+		$return['position']    = '';
+		$return['latitude']    = '';
+		$return['longitude']   = '';
+		$return['altitude']    = '';
+
+		// Size
+		$size = filesize($url)/1024;
+		if ($size>=1024) $return['size'] = round($size/1024, 1) . ' MB';
+		else $return['size'] = round($size, 1) . ' KB';
+
+		// IPTC Metadata
+		// See https://www.iptc.org/std/IIM/4.2/specification/IIMV4.2.pdf for mapping
+		if(isset($iptcArray['APP13'])) {
+
+			$iptcInfo = iptcparse($iptcArray['APP13']);
+			if (is_array($iptcInfo)) {
+
+				// Title
+				if (!empty($iptcInfo['2#105'][0])) $return['title'] = $iptcInfo['2#105'][0];
+				else if (!empty($iptcInfo['2#005'][0])) $return['title'] = $iptcInfo['2#005'][0];
+
+				// Description
+				if (!empty($iptcInfo['2#120'][0])) $return['description'] = $iptcInfo['2#120'][0];
+
+				// Tags
+				if (!empty($iptcInfo['2#025'])) $return['tags'] = implode(',', $iptcInfo['2#025']);
+
+				// Position
+				$fields = array();
+				if (!empty($iptcInfo['2#090'])) $fields[] = trim($iptcInfo['2#090'][0]);
+				if (!empty($iptcInfo['2#092'])) $fields[] = trim($iptcInfo['2#092'][0]);
+				if (!empty($iptcInfo['2#095'])) $fields[] = trim($iptcInfo['2#095'][0]);
+				if (!empty($iptcInfo['2#101'])) $fields[] = trim($iptcInfo['2#101'][0]);
+
+				if (!empty($fields)) $return['position'] = implode(', ', $fields);
+
+			}
+
+		}
 
 		// Read EXIF
-		if ($info['mime']=='image/jpeg') $exif = @exif_read_data($url, 'EXIF', 0);
+		if ($info['mime']=='image/jpeg') $exif = @exif_read_data($url, 'EXIF', false, false);
 		else $exif = false;
 
 		// EXIF Metadata
 		if ($exif!==false) {
 
+			// Orientation
 			if (isset($exif['Orientation'])) $return['orientation'] = $exif['Orientation'];
 			else if (isset($exif['IFD0']['Orientation'])) $return['orientation'] = $exif['IFD0']['Orientation'];
 
-			$temp = @$exif['ISOSpeedRatings'];
-			if (isset($temp)) $return['iso'] = $temp;
+			// ISO
+			if (!empty($exif['ISOSpeedRatings'])) $return['iso'] = $exif['ISOSpeedRatings'];
 
-			$temp = @$exif['COMPUTED']['ApertureFNumber'];
-			if (isset($temp)) $return['aperture'] = $temp;
+			// Aperture
+			if (!empty($exif['COMPUTED']['ApertureFNumber'])) $return['aperture'] = $exif['COMPUTED']['ApertureFNumber'];
 
-			$temp = @$exif['Make'];
-			if (isset($temp)) $return['make'] = trim($temp);
+			// Make
+			if (!empty($exif['Make'])) $return['make'] = trim($exif['Make']);
 
-			$temp = @$exif['Model'];
-			if (isset($temp)) $return['model'] = trim($temp);
+			// Model
+			if (!empty($exif['Model'])) $return['model'] = trim($exif['Model']);
 
-			$temp = @$exif['ExposureTime'];
-			if (isset($temp)) $return['shutter'] = $exif['ExposureTime'] . ' s';
+			// Exposure
+			if (!empty($exif['ExposureTime'])) $return['shutter'] = $exif['ExposureTime'] . ' s';
 
-			$temp = @$exif['FocalLength'];
-			if (isset($temp)) {
-				if (strpos($temp, '/')!==FALSE) {
-					$temp = explode('/', $temp, 2);
+			// Focal Length
+			if (!empty($exif['FocalLength'])) {
+				if (strpos($exif['FocalLength'], '/')!==false) {
+					$temp = explode('/', $exif['FocalLength'], 2);
 					$temp = $temp[0] / $temp[1];
 					$temp = round($temp, 1);
 					$return['focal'] = $temp . ' mm';
+				} else {
+					$return['focal'] = $exif['FocalLength'] . ' mm';
 				}
-				$return['focal'] = $temp . ' mm';
 			}
 
-			$temp = @$exif['DateTimeOriginal'];
-			if (isset($temp)) $return['takestamp'] = strtotime($temp);
+			// Takestamp
+			if (!empty($exif['DateTimeOriginal'])) $return['takestamp'] = strtotime($exif['DateTimeOriginal']);
+
+			// Lens field from Lightroom
+			if (!empty($exif['UndefinedTag:0xA434'])) $return['lens'] = trim($exif['UndefinedTag:0xA434']);
+
+			// Deal with GPS coordinates
+			if (!empty($exif['GPSLatitude']) && !empty($exif['GPSLatitudeRef'])) $return['latitude'] = getGPSCoordinate($exif['GPSLatitude'], $exif['GPSLatitudeRef']);
+			if (!empty($exif['GPSLongitude']) && !empty($exif['GPSLongitudeRef'])) $return['longitude'] = getGPSCoordinate($exif['GPSLongitude'], $exif['GPSLongitudeRef']);
 
 		}
 

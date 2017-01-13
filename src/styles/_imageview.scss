@@ -10,9 +10,14 @@
 	transition: background-color .3s;
 
 	// Modes -------------------------------------------------------------- //
-	&.view { background-color: inherit; }
+	&.view {
+		background-color: inherit;
+	}
 
-	&.full { background-color: black(1); }
+	&.full {
+		background-color: black(1);
+		cursor: none;
+	}
 
 	// ImageView -------------------------------------------------------------- //
 	#image {
@@ -27,7 +32,6 @@
 		width: auto;
 		height: auto;
 		transition: top .3s, right .3s, bottom .3s, left .3s, max-width .3s, max-height .3s;
-		will-change: transform;
 
 		animation-name: zoomIn;
 		animation-duration: .3s;
